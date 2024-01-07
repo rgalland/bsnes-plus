@@ -407,6 +407,11 @@ inline VOICE_CLOCK( V2 )
 		entry += 2;
 	m.t_brr_next_addr = GET_LE16A( entry );
 	
+	// Copy previous value of venv to be used for multiplication with output		
+	v->t_env = v->env;
+		
+	// seems to break things	
+	
 	m.t_adsr0 = VREG(v->regs,adsr0);
 	
 	// Read pitch, spread over two clocks
@@ -439,20 +444,10 @@ VOICE_CLOCK( V3c )
 			m.t_brr_header = 0; // header is ignored on this sample
 			m.kon_check    = true;
 		}
-		
-		// Envelope is never run during KON
-		v->env        = 0;
-		v->hidden_env = 0;
-		
-		// Disable BRR decoding until last three samples
-		v->interp_pos = 0;
-		if ( --v->kon_delay & 3 )
-			v->interp_pos = 0x4000;
-		
-		// Pitch is never added during KON
+		v->kon_delay--;	
+		// Pitch always zero during kon
 		m.t_pitch = 0;
 	}
-	
 	// Gaussian interpolation
 	{
 		int output = interpolate( v );
@@ -462,8 +457,7 @@ VOICE_CLOCK( V3c )
 			output = (int16_t) (m.noise * 2);
 		
 		// Apply envelope
-		m.t_output = (output * v->env) >> 11 & ~1;
-		v->t_envx_out = (uint8_t) (v->env >> 4);
+		m.t_output = (output * v->t_env) >> 11 & ~1;
 	}
 	
 	// Immediate silence due to end of sample or soft reset
@@ -484,10 +478,12 @@ VOICE_CLOCK( V3c )
 		{
 			v->kon_delay = 5;
 			v->env_mode  = env_attack;
+			// Envelope is never run during KON
+			v->env        = 0;
+			v->hidden_env = 0;
 		}
 	}
-	
-	// Run envelope for next sample
+	// Run envelope for this sample before adsr is updated
 	if ( !v->kon_delay )
 		run_envelope( v );
 }
@@ -529,12 +525,20 @@ VOICE_CLOCK( V4 )
 		}
 	}
 	
-	// Apply pitch
-	v->interp_pos = (v->interp_pos & 0x3FFF) + m.t_pitch;
-	
-	// Keep from getting too far ahead (when using pitch modulation)
-	if ( v->interp_pos > 0x7FFF )
-		v->interp_pos = 0x7FFF;
+	// Next interpolation value 
+	if ( v->kon_delay )
+	{
+		v->interp_pos = 0;
+		// Disable BRR decoding until last three samples
+		if ( (v->kon_delay - 1) &  3 )
+			v->interp_pos = 0x4000;
+	} else {
+		// Apply pitch
+		v->interp_pos = (v->interp_pos & 0x3FFF) + m.t_pitch;
+		// Keep from getting too far ahead (when using pitch modulation)
+		if ( v->interp_pos > 0x7FFF )
+			v->interp_pos = 0x7FFF;
+	}
 	
 	// Output left
 	voice_output( v, 0 );
@@ -562,7 +566,7 @@ inline VOICE_CLOCK( V7 )
 	// Update ENDX
 	REG(endx) = m.endx_buf;
 	
-	m.envx_buf = v->t_envx_out;
+	m.envx_buf = (uint8_t) (v->t_env >> 4);
 }
 inline VOICE_CLOCK( V8 )
 {
@@ -962,7 +966,7 @@ void SPC_DSP::copy_state( unsigned char** io, copy_func_t copy )
 			SPC_COPY(  uint8_t, m );
 			v->env_mode = (enum env_mode_t) m;
 		}
-		SPC_COPY(  uint8_t, v->t_envx_out );
+		SPC_COPY( uint16_t, v->t_env );
 		
 		copier.extra();
 	}
